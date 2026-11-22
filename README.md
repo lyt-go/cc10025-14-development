@@ -66,8 +66,48 @@ npm run dev
 | 分区规划 | `partition_plan` | 分区方案 | 方案编号、关联资产、分区键 |
 | 补数任务 | `backfill_job` | 补数作业 | 作业编号、目标资产、补数区间 |
 | 质量报告 | `quality_report` | 质量报告 | 报告编号、关联资产、检核时间 |
-| 回收清理 | `reclaim_job` | 回收任务 | 任务编号、目标资产、回收范围 |
+| 回收清理 | `reclaim_job` | 回收任务 | 任务编号、目标资产、分区清单、回执编号 |
 | 变更通知 | `change_notice` | 变更通知 | 通知编号、关联资产、变更类型 |
+
+## 回收资格与豁免
+
+回收不再凭「保留天数」一个字段直接派发，而是按申请覆盖的每个分区核对到期规则与豁免：
+
+1. **规则版本**：保留规则生效 / 停用都会写入 `retention_rule_history`，记录当天的
+   保留天数与适用时段。评估时按「同一资产 + 同一适用时段 + 评估时刻」解析当时有效的
+   版本，不会拿别的资产或别的时段的阈值凑数。
+2. **到期计算**：`到期时间 = 分区数据截止时间 + 规则保留天数`。若分区登记的声明到期
+   时间与按阈值算出的不一致，该分区进入待复核，不自动释放。
+3. **豁免**：豁免记录有生效时间和失效时间，只有「生效 ≤ 评估时刻 < 失效」才受保护。
+   豁免内分区不取得回收资格；解除豁免只影响之后的评估，不改写已落库的资格证据。
+4. **资格明细**（`reclaim_eligibility`，只追加）：提交申请时落一批，执行时按执行时刻
+   再落一批。每条明细带证据快照（当时的规则、豁免、分区、阈值），事后修改规则不会
+   回头改写历史批次。
+5. **回执**（`reclaim_receipt`）：执行时落库，记录本次释放范围、因豁免 / 未到期 /
+   待复核 / 规则不适用 / 已清理而未处置的范围，以及采用的规则版本与资格编号。
+6. **重复回收防护**：释放台账（`reclaim_cleaned`）按「资产 + 分区」唯一。再次提交或
+   重试时，已清理分区资格为「已清理」，不会重复回收；已完成 / 执行中的任务需先
+   「重新打开」才能重试。
+
+申请范围里有无法核对的分区（未登记台账、资产不一致）时，整份申请进入待复核，
+不会在范围未定情况下部分释放。
+
+### 相关接口
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/retention/partitions` | 登记分区台账（资产、分区键、数据截止时间、适用时段） |
+| GET | `/api/retention/partitions` | 查询分区台账 |
+| POST | `/api/retention/exemptions` | 批准分区豁免（可指定生效时间） |
+| POST | `/api/retention/exemptions/{id}/lift` | 解除豁免（可指定失效时间） |
+| GET | `/api/reclaim_job/{id}/eligibility` | 查询回收资格明细（可按 `batch` 过滤） |
+| GET | `/api/reclaim_job/{id}/receipts` | 查询执行回执 |
+
+`retention_partition` / `retention_rule_history` / `partition_exemption` /
+`reclaim_eligibility` / `reclaim_receipt` / `reclaim_cleaned` 是领域内部表，
+不出现在 `/api/overview` 的业务模块统计里。
+
+场景回归测试：`cd backend && .venv/bin/python -I test_retention_eligibility.py`。
 
 ## 约定
 
